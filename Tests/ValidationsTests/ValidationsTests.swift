@@ -99,6 +99,14 @@ class ValidationTests: XCTestCase {
         XCTAssertThrowsError(try Validator<String>.url.validate("bananas"))
     }
     
+    func testValidatable() throws {
+        let pet = Pet(name: "barky", age: 5)
+        try Validator<Pet>.valid.validate(pet)
+        
+        pet.name = ""
+        XCTAssertThrowsError(try Validator<Pet>.valid.validate(pet))
+    }
+    
     static var allTests = [
         ("testValidate", testValidate),
         ("testASCII", testASCII),

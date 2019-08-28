@@ -13,7 +13,7 @@ import XCTest
 class PublisherTests: XCTestCase {
     
     func testPublisher() {
-        let p = CapturingPublisher()
+        let p = CapturingPublisher<String>(!.empty && .count(3...))
         p.value = ""
         XCTAssertNil(p.value)
         p.value = "foo-bar"
@@ -22,49 +22,76 @@ class PublisherTests: XCTestCase {
         XCTAssertEqual(p.value, "foo")
         p.value = "fo"
         XCTAssertNil(p.value)
-
     }
     
+    func testTryValidate() {
+        let p = CapturingPublisher<String>(!.empty && .count(3...), .tryValidate, tryFailure: "failed")
+        //XCTAssertEqual(p.value, "failed")
+        p.value = "foo-bar"
+        XCTAssertEqual(p.value, "foo-bar")
+
+    }
+
 }
 
 @available(macOS 10.15, iOS 13, *)
-final class CapturingPublisher: Codable, Reflectable {
+final class CapturingPublisher<T> {
     
-    let subject = PassthroughSubject<String, Never>()
+    var subject = PassthroughSubject<T, Never>()
+    var trySubject = PassthroughSubject<T, BasicValidationError>()
     var subscription: AnyCancellable? = nil
+    let validator: Validator<T>
+    let type: PublisherType
+    var tryFailure: T? = nil
     
-    var _value: String? = nil
+    var _value: T? = nil
     
-    var value: String? {
+    var value: T? {
         get { _value }
         set {
             guard let value = newValue else {
                 return
             }
-            subject.send(value)
+            
+            switch type {
+            case .tryValidate:
+                trySubject.send(value)
+            default:
+                subject.send(value)
+            }
+            //subject.send(value)
         }
     }
     
-    init() {
+    init(_ validator: Validator<T>, _ type: PublisherType = .validate, tryFailure: T? = nil) {
+        self.validator = validator
+        self.type = type
+        self.tryFailure = tryFailure
         setup()
     }
     
     func setup() {
-        subscription = subject
-            .validate(!.empty && .count(3...))
-            .sink { self._value = $0 }
-    }
-    
-    func encode(to encoder: Encoder) throws {
-        var container = encoder.singleValueContainer()
-        try container.encode(value)
-    }
-    
-    required init(from decoder: Decoder) throws {
-        setup()
-        let container = try decoder.singleValueContainer()
-        if let string = try container.decode(String?.self) {
-            self.value = string
+        switch type {
+        case .tryValidate:
+            subscription = trySubject
+                .tryValidate(self.validator)
+                .replaceError(with: tryFailure!)
+                .sink { self._value = $0 }
+            
+        default:
+            subscription = subject
+                .validate(self.validator)
+                .sink { self._value = $0 }
         }
+    }
+    
+    deinit {
+        subscription?.cancel()
+        subscription = nil
+    }
+
+    enum PublisherType {
+        case tryValidate
+        case validate
     }
 }

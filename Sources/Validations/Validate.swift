@@ -19,17 +19,17 @@ import Foundation
  ``` swift
  struct MyObject {
  
-    @Validate(!.empty && .count(1..<5)) var lessThanFive: String = ""
+    @Validate(!.empty && .count(1..<5))
+    var lessThanFive: String? = nil
  
  }
  
  let myObject = MyObject()
+ myObject.lessThanFive = "abcdefg"
  myObject.$lessThanFive.isValid
  // false
  
  myObject.lessThanFive == ""
- // true
- 
  print(myObject.$lessThanFive.error!)
  // ⚠️ [AndValidatorError.validationFailed: data is empty and data is less than required minimum of 1 character]
  
@@ -41,147 +41,168 @@ import Foundation
  myObject.$lessThanFive.isValid
  // false
  
- myObject.lessThanFive == "more than five"
+ myObject.lessThanFive == nil
  // true
  ```
  
  
  */
 @propertyWrapper
-public final class Validate<Value> {
+public struct Validate<Value> {
     
-    private var value: Value? = nil
+    /// Holds a `Result` of the latest validation.
+    private var result: Result<Value, BasicValidationError>
     
-    private var validator: Validator<Value>
+    /// The validator used to validate the `wrappedValue`.
+    public var validator: Validator<Value>
     
-    //private var useDefaultValue: Bool = false
+    /// The current value whether it's valid or not.
+    public private(set) var value: Value? = nil
     
-    //private var defaultValue: Value? = nil
+    /// The current error, from latest validation.
+    public var error: BasicValidationError? {
+        switch result {
+        case .failure(let error):
+            return error
+        default:
+            return nil
+        }
+    }
     
-    public var error: String? = nil
+    /// The default value to return if validation fails.
+    public var defaultValue: Value
     
+    /// The value returned when accessing the wrapped property.
+    /// If the current value is valid, then it is returned, else the `defaultValue` is returned.
     public var wrappedValue: Value {
         get {
-            guard let value = self.value else {
-                fatalError("no value set")
+            switch result {
+            case .success(let value):
+                return value
+            default:
+                return defaultValue
             }
-            //return useDefaultValue ? defaultValue! : value
-            return value
         }
-        set {
+        mutating set {
             value = newValue
-            validate()
+            validate(newValue)
         }
     }
     
-    public func validate() {
-        do {
-            try validator.validate(wrappedValue)
-            error = nil
-        } catch {
-            self.error = error.localizedDescription
-        }
-    }
-    
+    /// Convenience to check if current value is valid.
     public var isValid: Bool {
-        validate()
         return error == nil
     }
     
+    /// Allows access with the `$` prefix.
     public var projectedValue: Validate<Value> {
         return self
     }
     
-   
-    
-    public init(wrappedValue: Value, using validator: Validator<Value>) {
-           self.validator = validator
-           self.wrappedValue = wrappedValue
-           //self.defaultValue = defaultValue
+    /// Validates the value and set's our current `result`.
+    mutating func validate(_ value: Value) {
+        self.result = validator.result(for: value)
     }
     
-    
-    public convenience init(wrappedValue: Value, _ validator: Validator<Value>) {
-        self.init(wrappedValue: wrappedValue, using: validator)
+    /// Initialiizes a new property with the given values.
+    ///
+    /// - parameter wrappedValue: This passed via the wrapped property.
+    /// - parameter default: The default value returned if validations fail
+    /// - parameter validator: The vallidator to use to validate values for the property
+    ///
+    /// ```
+    /// struct MyObject {
+    ///
+    ///     @Validate(default: "foo-bar", !.empty && .count(3...))
+    ///     var string: String = ""
+    ///
+    /// }
+    ///
+    /// var x = MyObject()
+    /// print(x.string)
+    /// // foo-bar
+    ///
+    /// x.string = "bar-foo"
+    /// print(x.string)
+    /// // bar-foo
+    ///
+    /// x.string = "fo"
+    /// x.$string.isValid
+    /// // false
+    ///
+    /// ```
+    ///
+    public init(wrappedValue: Value, default defaultValue: Value, _ validator: Validator<Value>) {
+        self.validator = validator
+        self.defaultValue = defaultValue
+        self.result = validator.result(for: wrappedValue)
+        self.wrappedValue = wrappedValue
     }
     
 }
 
 
-
-extension Validate where Value: Validatable {
-
-    public convenience init(wrappedValue: Value) {
-        self.init(wrappedValue: wrappedValue, using: Validator<Value>.valid)
+extension Validate where Value: ExpressibleByNilLiteral {
+    
+    /// Initialiizes a new property with the given values and set's the `defaultValue` to `nil`
+    ///
+    /// - parameter wrappedValue: This passed via the wrapped property.
+    /// - parameter validator: The vallidator to use to validate values for the property
+    ///
+    /// ```
+    /// struct MyObject {
+    ///
+    ///     @Validate(!.empty && .count(3...))
+    ///     var string: String? = nil
+    ///
+    /// }
+    ///
+    /// var x = MyObject()
+    /// print(x.string ?? "empty")
+    /// // empty
+    ///
+    /// x.string = "bar-foo"
+    /// print(x.string ?? "empty")
+    /// // bar-foo
+    ///
+    /// x.string = "fo"
+    /// x.$string.isValid
+    /// // false
+    ///
+    /// ```
+    ///
+    public init(wrappedValue: Value, _ validator: Validator<Value>) {
+        self.defaultValue = nil
+        self.validator = validator
+        self.result = validator.result(for: wrappedValue)
+        self.wrappedValue = wrappedValue
     }
 }
 
-@propertyWrapper
-public final class ValidateOr<Value> {
+extension Result where Failure == BasicValidationError {
     
-    private var value: Value? = nil
-    
-    private var validator: Validator<Value>
-    
-    private var defaultValue: Value
-    
-    public var error: String? = nil
-    
-    public var wrappedValue: Value {
-        get {
-            guard let value = self.value, self.isValid else {
-                return defaultValue
-            }
-            return value
-        }
-        set {
-            value = newValue
-            validate()
-        }
-    }
-    
-    public func validate() {
-        guard let value = self.value else {
-            return
-        }
+    /// Initializes a new `Result<Success, BasicValidationError>`.
+    ///
+    /// - parameter value: The value to validate.
+    /// - parameter validator: The validator to use to validate the value.
+    ///
+    /// - Returns: A `Result.success` if the value is valid or a `Result.failure` if it does not.
+    ///
+    public init(_ value: Success, validator: Validator<Success>) {
         do {
             try validator.validate(value)
-            error = nil
+            self = .success(value)
         } catch {
-            self.error = error.localizedDescription
+            self = .failure(BasicValidationError(error.localizedDescription))
         }
     }
     
-    public var isValid: Bool {
-        validate()
-        return error == nil
-    }
-    
-    public var projectedValue: ValidateOr<Value> {
-        return self
-    }
-    
-   
-    
-    public init(wrappedValue: Value, using validator: Validator<Value>, with defaultValue: Value) {
-           self.validator = validator
-           self.defaultValue = defaultValue
-           self.wrappedValue = wrappedValue
-    }
-    
-    
-    public convenience init(wrappedValue: Value, _ validator: Validator<Value>, with defaultValue: Value) {
-        self.init(wrappedValue: wrappedValue, using: validator, with: defaultValue)
-    }
-    
 }
 
-
-
-extension ValidateOr where Value: Validatable {
-
-    public convenience init(wrappedValue: Value, with defaultValue: Value) {
-        self.init(wrappedValue: wrappedValue, using: Validator<Value>.valid, with: defaultValue)
+extension Validator {
+    
+    /// Validates a value and returns a `Result<T, BasicValidationError>` .
+    public func result(for value: T) -> Result<T, BasicValidationError> {
+        return Result(value, validator: self)
     }
 }
-
